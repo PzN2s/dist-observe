@@ -1,0 +1,21 @@
+[package]
+name = "dist-observe"
+version = "0.1.0"
+edition = "2021"
+description = "Distributed Systems Observability & Correlator — MVP: CPU/RAM/Disk/GPU with unified timestamp + exhaustion forecast"
+
+[dependencies]
+sysinfo = "0.30"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+rusqlite = { version = "0.31", features = ["bundled"] }
+anyhow = "1"
+nvml-wrapper = "0.11"
+libc = "0.2"
+hostname = "0.4"
+sha2 = "0.10"
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+rustls-pki-types = "1"
+rcgen = "0.13"

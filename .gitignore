@@ -1,0 +1,4 @@
+/target
+*.db
+*.log
+/soak/

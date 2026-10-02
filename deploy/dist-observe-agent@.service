@@ -1,0 +1,33 @@
+[Unit]
+Description=dist-observe agent node %i (mTLS push to collector)
+Documentation=https://github.com/anomalyco/opencode
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Least privilege: NON-ROOT by design. The agent only needs world-readable
+# /proc, /sys/class/net, /sys/fs/cgroup (plus `ss`). Consequence, documented:
+# other users' /proc/PID/smaps is unreadable → those PIDs are reported as
+# skipped in ffi-top, never as silent zeros. The agent's OWN cgroup scoping
+# still works (tenant attribution covers this service's processes).
+User=dist-observe
+Group=dist-observe
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/dist-observe
+# Per-node identity: instance name %i must match a keygen client name, e.g.
+#   dist-observe keygen --dir certs --client web-1   →  client-web-1-*.pem
+#   systemctl enable --now dist-observe-agent@web-1
+Environment=OBSERVE_COLLECTOR=127.0.0.1:18080
+Environment=OBSERVE_CERTDIR=/etc/dist-observe
+ExecStart=/usr/local/bin/dist-observe agent --collector ${OBSERVE_COLLECTOR} --node-id %i --interval 2 --local-db /var/lib/dist-observe/agent-%i.db --tls-ca ${OBSERVE_CERTDIR}/ca-cert.pem --tls-cert ${OBSERVE_CERTDIR}/client-%i-cert.pem --tls-key ${OBSERVE_CERTDIR}/client-%i-key.pem
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

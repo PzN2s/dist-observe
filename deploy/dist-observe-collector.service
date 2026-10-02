@@ -1,0 +1,33 @@
+[Unit]
+Description=dist-observe central collector (multi-node correlator, mTLS)
+Documentation=https://github.com/anomalyco/opencode
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Least privilege: dedicated non-root user (created by scripts/install.sh).
+User=dist-observe
+Group=dist-observe
+# Sandboxing: read-only world, private /tmp, no new privileges.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/dist-observe
+# Configuration: edit Environment= lines (or an EnvironmentFile) per host.
+Environment=OBSERVE_BIND=127.0.0.1:18080
+Environment=OBSERVE_DB=/var/lib/dist-observe/central.db
+Environment=OBSERVE_CA=/etc/dist-observe/ca-cert.pem
+Environment=OBSERVE_CERT=/etc/dist-observe/server-cert.pem
+Environment=OBSERVE_KEY=/etc/dist-observe/server-key.pem
+Environment=OBSERVE_AUDIT=/var/log/dist-observe/audit.log
+ExecStart=/usr/local/bin/dist-observe collector --bind ${OBSERVE_BIND} --db ${OBSERVE_DB} --tls-ca ${OBSERVE_CA} --tls-cert ${OBSERVE_CERT} --tls-key ${OBSERVE_KEY} --audit-log ${OBSERVE_AUDIT}
+Restart=on-failure
+RestartSec=5s
+# Never restart-loop forever on a broken config: give up after 5 fast fails.
+
+[Install]
+WantedBy=multi-user.target
