@@ -15,7 +15,11 @@ pub struct Forecast {
 
 fn linreg(xs: &[f64], ys: &[f64]) -> (f64, f64) {
     // returns (slope, intercept); xs in hours, ys in %.
-    let n = xs.len() as f64;
+    // Pair first: callers must pass matched slices, but never trust it —
+    // mismatched lengths would otherwise poison the means.
+    let n = xs.len().min(ys.len());
+    let (xs, ys) = (&xs[..n], &ys[..n]);
+    let n = n as f64;
     if n < 2.0 {
         return (0.0, ys.first().copied().unwrap_or(0.0));
     }
@@ -99,8 +103,7 @@ pub fn forecast_from_store(series: &[(f64, f64, f64)]) -> (Forecast, Forecast) {
 }
 
 /// Z-score baseline deviation: is the latest value anomalous vs its own history?
-pub fn zscore_anomaly(vals: &[f64]) -> Option<(f64, String)> {
-    if vals.len() < 10 {
+pub fn zscore_anomaly(vals: &[f64]) -> Option<(f64, String)> {    if vals.len() < 10 {
         return None;
     }
     let (base, &[last]) = vals.split_at(vals.len() - 1) else {
@@ -118,5 +121,24 @@ pub fn zscore_anomaly(vals: &[f64]) -> Option<(f64, String)> {
         Some((z, format!("baseline deviation z={z:.1} (mean {mean:.1}±{std:.1})")))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn linreg_ignores_length_mismatch() {
+        // 3 x-values, 5 y-values: must pair the first 3, never divide the
+        // 3-pair covariance by n=5 (that would shrink every slope 40%).
+        let (slope, _) = linreg(&[0.0, 1.0, 2.0], &[0.0, 1.0, 2.0, 99.0, 99.0]);
+        assert!((slope - 1.0).abs() < 1e-9, "slope={slope}");
+    }
+
+    #[test]
+    fn forecast_needs_span_not_just_count() {
+        let f = forecast_series("mem", &[0.0, 0.5, 1.0], &[50.0, 50.5, 51.0]);
+        assert!(f.verdict.contains("short window"), "{}", f.verdict);
     }
 }

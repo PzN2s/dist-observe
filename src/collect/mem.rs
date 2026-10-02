@@ -20,12 +20,16 @@ pub struct MemSample {
     pub shmem_kb: u64,    // shared memory (/dev/shm, IPC) — classic FFI leak spot
     pub mlocked_kb: u64,  // GPU-pinned / mlock'd — invisible to heap profilers
     pub swap_total_kb: u64, // from /proc/meminfo (ground truth)
+    #[serde(default)]
     pub swap_free_kb: u64,  // from /proc/meminfo (ground truth)
     pub swap_used_kb: u64,
     pub swap_used_pct: f64,
     /// Cumulative pages swapped in/out since boot (/proc/vmstat pswpin/pswpout).
     /// Rate = Δ/Δt distinguishes STEADY baseline from ACTIVE thrashing.
+    /// #[serde(default)]: added after v1 — old rows read as zero, never dropped.
+    #[serde(default)]
     pub swap_in_pages: u64,
+    #[serde(default)]
     pub swap_out_pages: u64,
 }
 

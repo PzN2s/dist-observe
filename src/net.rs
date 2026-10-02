@@ -22,6 +22,13 @@ pub fn read_request(stream: &mut impl Read) -> anyhow::Result<Request> {
     let mut reader = BufReader::new(stream);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
+    // Unbounded header blocks are a memory-exhaustion vector (a cert-holding
+    // attacker included): cap request line at 4KB, headers at 16KB / 128 lines.
+    if request_line.len() > 4096 {
+        anyhow::bail!("request line too long");
+    }
+    let mut request_line = String::new();
+    reader.read_line(&mut request_line)?;
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("").to_string();
     let path = parts.next().unwrap_or("/").to_string();
@@ -29,9 +36,17 @@ pub fn read_request(stream: &mut impl Read) -> anyhow::Result<Request> {
         anyhow::bail!("empty request line");
     }
     let mut headers: HashMap<String, String> = HashMap::new();
+    let mut header_bytes = 0usize;
     loop {
         let mut line = String::new();
         reader.read_line(&mut line)?;
+        header_bytes += line.len();
+        if header_bytes > 16_384 {
+            anyhow::bail!("header block too big");
+        }
+        if headers.len() > 128 {
+            anyhow::bail!("too many headers");
+        }
         let t = line.trim();
         if t.is_empty() {
             break;

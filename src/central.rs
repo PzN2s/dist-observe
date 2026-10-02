@@ -156,6 +156,13 @@ impl Central {
     /// True if this peer IP may proceed (sliding 60s window).
     pub fn check_rate(&mut self, peer: &str) -> bool {
         let now = std::time::Instant::now();
+        // Bound the table itself: drop peers idle a full window once it grows
+        // past 1k entries, so distinct-IP churn can't grow it without bound.
+        if self.hits.len() > 1024 {
+            self.hits.retain(|_, q: &mut VecDeque<std::time::Instant>| {
+                q.back().map(|t| now.duration_since(*t).as_secs() < 60).unwrap_or(false)
+            });
+        }
         let q = self.hits.entry(peer.to_string()).or_default();
         while q.front().map(|t| now.duration_since(*t).as_secs() >= 60).unwrap_or(false) {
             q.pop_front();
@@ -380,6 +387,11 @@ pub fn serve(
         ),
     }
     let tls = Arc::new(tls);
+    // Hard cap on concurrent connection threads: TLS handshakes cost CPU even
+    // when they end in rejection, so an unbounded thread-per-connection server
+    // is handshake-floodable. Excess connections are dropped + audited.
+    let live = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    const MAX_CONNS: usize = 64;
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(s) => s,
@@ -392,9 +404,26 @@ pub fn serve(
             .peer_addr()
             .map(|a| a.ip().to_string())
             .unwrap_or("?".into());
+        if live.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= MAX_CONNS {
+            live.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            audit(&format!("conn-cap peer={peer}"), &match &*tls {
+                TlsMode::Tls { audit, .. } => audit.clone(),
+                TlsMode::Insecure => None,
+            });
+            continue;
+        }
         let central = Arc::clone(&central);
         let tls = Arc::clone(&tls);
-        std::thread::spawn(move || match &*tls {
+        let live = Arc::clone(&live);
+        std::thread::spawn(move || {
+            struct Guard(Arc<std::sync::atomic::AtomicUsize>);
+            impl Drop for Guard {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            let _guard = Guard(live);
+            match &*tls {
             TlsMode::Tls { cfg, audit: audit_file } => {
                 let mut conn = match rustls::ServerConnection::new(Arc::clone(cfg)) {
                     Ok(c) => c,
@@ -404,7 +433,7 @@ pub fn serve(
                     }
                 };
                 let mut sock = stream;
-                let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(30)));
+                let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(10)));
                 let mut tls_stream = rustls::Stream::new(&mut conn, &mut sock);
                 // One handshake, then up to 200 requests on this connection.
                 // Handshake failure on request #1 = reject+log (no app byte trusted).
@@ -424,13 +453,14 @@ pub fn serve(
             }
             TlsMode::Insecure => {
                 let mut sock = stream;
-                let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(30)));
+                let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(10)));
                 for _ in 0..200 {
                     match handle(&mut sock, &central, &peer) {
                         Ok(true) => {}
                         _ => break,
                     }
                 }
+            }
             }
         });
     }

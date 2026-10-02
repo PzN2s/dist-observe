@@ -23,7 +23,12 @@ pub fn run(o: Opts) -> Result<()> {
             .map(|h| h.to_string_lossy().to_string())
             .unwrap_or_else(|_| "agent".into())
     });
-    let interval = o.interval;
+    let interval = if o.interval.is_finite() && o.interval >= 0.1 {
+        o.interval
+    } else {
+        eprintln!("WARNING: agent interval {}s invalid — clamped to 0.1s", o.interval);
+        0.1
+    };
     let count = o.count;
     let disk = o.disk.as_str();
     let tls = o.tls;

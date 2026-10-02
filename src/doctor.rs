@@ -33,12 +33,22 @@ pub fn run(window_ms: i64) -> Result<()> {
             }
         }
     }
-    // 2. systemd-timesyncd fallback.
+    // 2. systemd-timesyncd fallback: show the informative lines, not [Time].
     if !have_source {
         if let Ok(out) = std::process::Command::new("timedatectl").arg("show-timesync").output() {
             if out.status.success() {
                 let txt = String::from_utf8_lossy(&out.stdout);
-                println!("  timesyncd: {}", txt.lines().next().unwrap_or("").trim());
+                let mut shown = 0;
+                for line in txt.lines().map(str::trim).filter(|l| l.contains('=')) {
+                    println!("  timesyncd: {line}");
+                    shown += 1;
+                    if shown >= 4 {
+                        break;
+                    }
+                }
+                if shown > 0 {
+                    have_source = true;
+                }
             }
         }
     }

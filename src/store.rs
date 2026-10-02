@@ -80,6 +80,11 @@ impl Store {
         if !table_sql(&conn).contains("PRIMARY KEY(node, wall_ns)") {
             rebuild_composite(&conn, has_column(&conn, "node"))?;
         }
+        // Time-ordered scans (recent_series/show/replay) must not full-scan +
+        // sort at millions of rows: the composite PK starts with node.
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_wall ON snapshots(wall_ns);",
+        )?;
         Ok(Self { conn })
     }
 

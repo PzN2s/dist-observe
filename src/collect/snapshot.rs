@@ -13,8 +13,13 @@ pub struct UnifiedSnapshot {
     pub mem: MemSample,
     pub disk: DiskSample,
     pub gpus: Vec<GpuSample>,
+    // #[serde(default)]: snapshots recorded by older binaries lack these —
+    // replay/show must read them as zeroed, never drop the row.
+    #[serde(default)]
     pub net: NetSample,
+    #[serde(default)]
     pub psi: PsiSample,
+    #[serde(default)]
     pub tenant: TenantSample,
 }
 
@@ -41,5 +46,29 @@ pub fn take(sys: &mut System, disk_path: &str) -> UnifiedSnapshot {
         net,
         psi,
         tenant,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// v1-era JSON (no net/psi/tenant, no swap_free/in/out_pages) must still
+    /// parse after upgrades — replay/show on old DBs, never silent drops.
+    #[test]
+    fn old_schema_rows_still_parse() {
+        let old = r#"{"ts":{"wall_ns":1700000000000000000,"mono_ns":1,"wall_iso":"t"},
+            "hostname":"h","cpu":{"total_pct":10.0,"per_core_pct":[],"per_core_freq_mhz":[],
+            "load_avg_1":0.0,"load_avg_5":0.0,"load_avg_15":0.0,"ctx_switches_total":0,
+            "processes_running":0,"page_faults_minor":0,"page_faults_major":0,"numa_nodes":[]},
+            "mem":{"total_kb":100,"available_kb":50,"used_kb":50,"used_pct":50.0,"free_kb":50,
+            "buffers_kb":0,"cached_kb":0,"shmem_kb":0,"mlocked_kb":0,"swap_total_kb":0,
+            "swap_used_kb":0,"swap_used_pct":0.0},
+            "disk":{"path":"/","total_gb":10.0,"avail_gb":9.0,"used_pct":10.0,
+            "read_kb_total":0,"write_kb_total":0},"gpus":[]}"#;
+        let s: UnifiedSnapshot = serde_json::from_str(old).expect("old rows must parse");
+        assert_eq!(s.mem.swap_in_pages, 0);
+        assert!(s.net.conns.is_empty());
+        assert_eq!(s.hostname, "h");
     }
 }

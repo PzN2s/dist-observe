@@ -105,6 +105,13 @@ pub fn classify(input_id: &str, runs: &[WorkerRun]) -> Classification {
     c.rel_diff = max_abs / scale;
 
     let first = &runs[0];
+    // Verdict inputs must agree: same hash but different lengths/sums means
+    // corrupt or mixed-up rows — refuse to exonerate on a broken bound.
+    if !runs.iter().all(|r| r.input_len == first.input_len && r.input_abs_sum == first.input_abs_sum) {
+        c.verdict = Verdict::SuspectedRace;
+        c.evidence.push("input metadata disagrees across runs (len/abs-sum) — rows corrupt or mixed".into());
+        return c;
+    }
     let bound = order_error_bound(first.input_len, first.input_abs_sum);
     c.error_bound = bound;
 
@@ -365,5 +372,18 @@ mod tests {
         assert_eq!(order_error_bound(1, 1e16), 0.0);
         let b = order_error_bound(1001, 1e16 + 1000.0);
         assert!(b > 1000.0 && b < 10000.0, "bound={b}");
+    }
+
+    #[test]
+    fn metadata_mismatch_is_suspect() {
+        // Same hash but different declared lengths: corrupt rows must never
+        // exonerate via a bound computed from one side's metadata.
+        let mut rs = vec![
+            run("a", 1e16, "forward-fold", 11, 1001, 1e16 + 1000.0),
+            run("b", 1e16 + 1000.0, "reverse-fold", 22, 1001, 1e16 + 1000.0),
+        ];
+        rs[1].input_len = 7; // tampered metadata
+        let c = classify("t", &rs);
+        assert_eq!(c.verdict, Verdict::SuspectedRace, "{c:?}");
     }
 }

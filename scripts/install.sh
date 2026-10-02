@@ -26,19 +26,35 @@ fi
 [ -x "$BIN_SRC" ] || { echo "build first: cargo build (and set BIN_SRC=)"; exit 1; }
 
 # 1. Dedicated non-root user (no login, no home).
-# DESTDIR test mode NEVER touches real users/groups — everything stays
-# inside the fake tree (this previously leaked a real system user: fixed).
+# Two layered defenses for the "invalid group" class of failures:
+# (a) explicit groupadd first, user pinned with -g (distro login.defs differ);
+# (b) retry getent after each creation (sssd/nscd can lag behind the files).
 if [ -n "$DESTDIR" ]; then
-    echo "(test mode: skipping useradd; ownership flags off)"
+    echo "(test mode: skipping user/group creation; ownership flags off)"
     OWN_LIB=()
     OWN_ETC=()
-elif ! id "$APP_USER" >/dev/null 2>&1; then
-    NOLOGIN="$(command -v nologin || echo /bin/false)"
-    useradd --system --no-create-home --shell "$NOLOGIN" "$APP_USER"
-    echo "user $APP_USER created"
-    OWN_LIB=(-o "$APP_USER" -g "$APP_USER")
-    OWN_ETC=(-o root -g "$APP_USER")
 else
+    if ! getent group "$APP_USER" >/dev/null; then
+        groupadd --system "$APP_USER"
+        echo "group $APP_USER created"
+    fi
+    # Retry loop: name services (sssd/nscd) can lag seconds behind the files
+    # groupadd/useradd just wrote — a single getent may miss a group that
+    # provably exists on disk ("invalid group" right after "created").
+    wait_for() { # $1=name $2=getent-db
+        local t=0
+        while ! getent "$2" "$1" >/dev/null; do
+            sleep 1; t=$((t + 1))
+            [ "$t" -ge 10 ] && return 1
+        done
+    }
+    wait_for "$APP_USER" group || { echo "FATAL: group $APP_USER not visible after creation"; exit 1; }
+    if ! id "$APP_USER" >/dev/null 2>&1; then
+        NOLOGIN="$(command -v nologin || echo /bin/false)"
+        useradd --system --no-create-home --gid "$APP_USER" --shell "$NOLOGIN" "$APP_USER"
+        echo "user $APP_USER created"
+    fi
+    wait_for "$APP_USER" passwd || { echo "FATAL: user $APP_USER not visible after creation"; exit 1; }
     OWN_LIB=(-o "$APP_USER" -g "$APP_USER")
     OWN_ETC=(-o root -g "$APP_USER")
 fi

@@ -13,14 +13,24 @@ pub struct TlsFiles {
 }
 
 /// Generate a CA + server cert + client cert(s) into `dir` (keys mode 600).
+/// Explicit bounded validity (CA 10y, leaves 825d — the industry ceiling):
+/// rcgen defaults to year-4096 certs, i.e. forever-credentials if stolen.
+/// Expiry dates are printed so rotation is plannable, not discoverable.
 pub fn keygen(dir: &str, server_sans: &[String], clients: &[String]) -> Result<()> {
     use rcgen::{BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair};
+    fn validity(days: i64) -> (time::OffsetDateTime, time::OffsetDateTime) {
+        let now = time::OffsetDateTime::now_utc();
+        (now, now + time::Duration::days(days))
+    }
     std::fs::create_dir_all(dir)?;
     let mut ca_dn = DistinguishedName::new();
     ca_dn.push(DnType::CommonName, "dist-observe-ca");
     let mut ca_params = CertificateParams::default();
     ca_params.distinguished_name = ca_dn;
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    let (nb, na) = validity(3650);
+    ca_params.not_before = nb;
+    ca_params.not_after = na;
     let ca_key = KeyPair::generate()?;
     let ca_cert = ca_params.self_signed(&ca_key)?;
 
@@ -32,6 +42,9 @@ pub fn keygen(dir: &str, server_sans: &[String], clients: &[String]) -> Result<(
     let mut srv_params = CertificateParams::new(sans)?;
     srv_params.distinguished_name = srv_dn;
     srv_params.is_ca = IsCa::ExplicitNoCa;
+    let (snb, sna) = validity(825);
+    srv_params.not_before = snb;
+    srv_params.not_after = sna;
     let srv_key = KeyPair::generate()?;
     let srv_cert = srv_params.signed_by(&srv_key, &ca_cert, &ca_key)?;
 
@@ -49,6 +62,8 @@ pub fn keygen(dir: &str, server_sans: &[String], clients: &[String]) -> Result<(
         let mut p = CertificateParams::new(vec![])?;
         p.distinguished_name = dn;
         p.is_ca = IsCa::ExplicitNoCa;
+        p.not_before = snb;
+        p.not_after = sna;
         let k = KeyPair::generate()?;
         let c = p.signed_by(&k, &ca_cert, &ca_key)?;
         owned.push((format!("client-{name}-cert.pem"), c.pem()));
@@ -64,6 +79,8 @@ pub fn keygen(dir: &str, server_sans: &[String], clients: &[String]) -> Result<(
         }
     }
     println!("keygen → {dir}/ (ca + server + {} client certs)", clients.len());
+    println!("  validity: CA 10y (until {}), server/clients 825d (until {})",
+        na.date(), sna.date());
     println!("  collector: --tls-ca {dir}/ca-cert.pem --tls-cert {dir}/server-cert.pem --tls-key {dir}/server-key.pem");
     if let Some(first) = clients.first() {
         println!("  agent:     --tls-ca {dir}/ca-cert.pem --tls-cert {dir}/client-{first}-cert.pem --tls-key {dir}/client-{first}-key.pem");

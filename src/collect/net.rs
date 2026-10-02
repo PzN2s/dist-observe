@@ -136,7 +136,15 @@ pub fn parse_ss(text: &str) -> Vec<SsConn> {
 }
 
 fn ss_conns() -> Vec<SsConn> {
-    let Ok(out) = std::process::Command::new("ss").args(["-tin"]).output() else {
+    // `ss` dumps netlink: fast normally, but a wedged stack (exactly when you
+    // need telemetry most) must never stall the whole 1s sample. coreutils
+    // `timeout` bounds it with zero leaked threads (a spawn+abandon thread
+    // would leak one thread per wedged sample). Missing `timeout` binary →
+    // empty conns, everything else still sampled.
+    let out = std::process::Command::new("timeout")
+        .args(["1", "ss", "-tin"])
+        .output();
+    let Ok(out) = out else {
         return vec![];
     };
     if !out.status.success() {

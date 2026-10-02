@@ -26,7 +26,7 @@ pub fn render(a: &Anomaly) -> String {
         s.mem.swap_out_pages,
     ));
     o.push_str(&format!(
-        "  DISK {} {:4.1}% ({} GB free) | io r/w {} / {} MB\n",
+        "  DISK {} {:4.1}% ({:.1} GB free) | io r/w {} / {} MB\n",
         s.disk.path,
         s.disk.used_pct,
         s.disk.avail_gb,

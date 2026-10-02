@@ -160,7 +160,8 @@ fn main() -> Result<()> {
             let clients = if client.is_empty() { vec!["agent".to_string()] } else { client };
             tls::keygen(&dir, &server_san, &clients)
         }
-        Cmd::NondetDemo { db, input, inject_race } => nondet::demo(&db, inject_race, &input),        Cmd::NondetCheck { db, input } => {
+        Cmd::NondetDemo { db, input, inject_race } => nondet::demo(&db, inject_race, &input),
+        Cmd::NondetCheck { db, input } => {
             let mut st = store::Store::open(&db)?;
             let runs = st.runs_for_input(&input)?;
             if runs.is_empty() {
@@ -220,7 +221,18 @@ fn main() -> Result<()> {
     }
 }
 
+/// Clamp sample intervals: ≤0 busy-loops, negative panics Duration.
+/// Floor at 100ms with a loud warning instead of trusting CLI input.
+fn sane_interval(v: f64, who: &str) -> f64 {
+    if v.is_finite() && v >= 0.1 {
+        return v;
+    }
+    eprintln!("WARNING: {who} interval {v}s invalid — clamped to 0.1s");
+    0.1
+}
+
 fn ffi_track(pid: u32, interval: f64, count: usize) -> Result<()> {
+    let interval = sane_interval(interval, "ffi-track");
     println!("tracking PID {pid} every {interval}s × {count} (smaps categories)…");
     let mut hist = Vec::new();
     for i in 0..count {
@@ -301,6 +313,7 @@ struct RecordOpts {
 
 fn record(o: RecordOpts) -> Result<()> {
     let RecordOpts { db, disk, interval, count, window_ms, anomaly_cooldown, pretty, only_actionable } = o;
+    let interval = sane_interval(interval, "record");
     let mut sys = System::new_all();
     // Warmup: sysinfo CPU usage needs two reads ≥ MINIMUM_CPU_UPDATE_INTERVAL
     // apart — otherwise the first sample is always 0.0% (cold-start artifact).
@@ -324,7 +337,11 @@ fn record(o: RecordOpts) -> Result<()> {
                 println!("{}", report::render(&a));
             }
         }
-        st.insert(&snap.hostname.clone(), &snap)?;
+        st.insert(&snap.hostname.clone(), &snap).unwrap_or_else(|e| {
+            // Storage must never abort a recording run (disk full, transient
+            // lock): the sample already went to stdout, keep going.
+            eprintln!("store insert failed (sample kept on stdout): {e}");
+        });
         prev = Some(snap);
         i += 1;
         if count != 0 && i >= count {

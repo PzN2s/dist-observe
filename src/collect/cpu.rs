@@ -1,6 +1,5 @@
 //! CPU collector: per-core usage, NUMA topology, context switches, page faults.
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use sysinfo::System;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +35,13 @@ fn read_u64_from(path: &str, key: &str) -> Option<u64> {
 }
 
 fn numa_topology() -> Vec<NumaNode> {
+    // Topology never changes at runtime: discover once per process instead of
+    // readdir + file reads on every 1s tick.
+    static TOPO: std::sync::OnceLock<Vec<NumaNode>> = std::sync::OnceLock::new();
+    TOPO.get_or_init(discover_numa).clone()
+}
+
+fn discover_numa() -> Vec<NumaNode> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir("/sys/devices/system/node") else {
         return out;
@@ -139,9 +145,4 @@ pub fn numa_imbalance(sample: &CpuSample) -> Option<f32> {
         mx = mx.max(v);
     }
     Some(mx - mn)
-}
-
-#[allow(dead_code)]
-pub fn _map_example() -> HashMap<String, String> {
-    HashMap::new()
 }

@@ -12,7 +12,11 @@ pub struct DiskSample {
 }
 
 fn statvfs_usage(path: &str) -> (f64, f64, f64) {
-    let c = std::ffi::CString::new(path).unwrap();
+    // A NUL byte in the path (CLI-supplied) must degrade to zeros, never panic.
+    let c = match std::ffi::CString::new(path) {
+        Ok(c) => c,
+        Err(_) => return (0.0, 0.0, 0.0),
+    };
     let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
     // SAFETY: valid C string + valid out pointer.
     let rc = unsafe { libc::statvfs(c.as_ptr(), &mut st) };
