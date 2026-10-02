@@ -13,6 +13,15 @@ UNIT_SRC="${UNIT_SRC:-$HERE/deploy}"
 DESTDIR="${DESTDIR:-}"
 APP_USER=dist-observe
 
+# Confirm before touching the system (bypass with --yes for automation).
+if [ "${1:-}" != "--yes" ]; then
+    printf 'Are you sure? This will install dist-observe as system services [y/N]: '
+    read -r ANSWER
+    [ "$ANSWER" = "y" ] || [ "$ANSWER" = "Y" ] || { echo "Aborted."; exit 0; }
+else
+    shift
+fi
+
 [ "$(id -u)" = "0" ] || { echo "run as root: sudo bash scripts/install.sh"; exit 1; }
 [ -x "$BIN_SRC" ] || { echo "build first: cargo build (and set BIN_SRC=)"; exit 1; }
 
