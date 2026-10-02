@@ -22,14 +22,25 @@ else
     shift
 fi
 
-[ "$(id -u)" = "0" ] || { echo "run as root: sudo bash scripts/install.sh"; exit 1; }
+[ "$(id -u)" = "0" ] || [ -n "$DESTDIR" ] || { echo "run as root: sudo bash scripts/install.sh"; exit 1; }
 [ -x "$BIN_SRC" ] || { echo "build first: cargo build (and set BIN_SRC=)"; exit 1; }
 
 # 1. Dedicated non-root user (no login, no home).
-if ! id "$APP_USER" >/dev/null 2>&1; then
+# DESTDIR test mode NEVER touches real users/groups — everything stays
+# inside the fake tree (this previously leaked a real system user: fixed).
+if [ -n "$DESTDIR" ]; then
+    echo "(test mode: skipping useradd; ownership flags off)"
+    OWN_LIB=()
+    OWN_ETC=()
+elif ! id "$APP_USER" >/dev/null 2>&1; then
     NOLOGIN="$(command -v nologin || echo /bin/false)"
     useradd --system --no-create-home --shell "$NOLOGIN" "$APP_USER"
     echo "user $APP_USER created"
+    OWN_LIB=(-o "$APP_USER" -g "$APP_USER")
+    OWN_ETC=(-o root -g "$APP_USER")
+else
+    OWN_LIB=(-o "$APP_USER" -g "$APP_USER")
+    OWN_ETC=(-o root -g "$APP_USER")
 fi
 
 # 2. Binary (-D creates leading dirs, needed for DESTDIR test trees).
@@ -38,9 +49,9 @@ install -D -m 0755 "$BIN_SRC" "$DESTDIR/usr/local/bin/dist-observe"
 # 3. State + certs + logs with least privilege.
 # (mkdir first: install -d does not create parents, needed for DESTDIR trees)
 mkdir -p "$DESTDIR/var/lib" "$DESTDIR/etc" "$DESTDIR/var/log" "$DESTDIR/etc/systemd/system"
-install -d -m 0750 -o "$APP_USER" -g "$APP_USER" "$DESTDIR/var/lib/dist-observe"
-install -d -m 0750 -o root -g "$APP_USER" "$DESTDIR/etc/dist-observe"
-install -d -m 0750 -o "$APP_USER" -g "$APP_USER" "$DESTDIR/var/log/dist-observe"
+install -d -m 0750 "${OWN_LIB[@]}" "$DESTDIR/var/lib/dist-observe"
+install -d -m 0750 "${OWN_ETC[@]}" "$DESTDIR/etc/dist-observe"
+install -d -m 0750 "${OWN_LIB[@]}" "$DESTDIR/var/log/dist-observe"
 echo "place certs in /etc/dist-observe (root-owned, group-readable keys NOT world-readable):"
 echo "  install -m 0640 -o root -g $APP_USER <dir>/ca-cert.pem /etc/dist-observe/"
 echo "  install -m 0640 -o root -g $APP_USER <dir>/server-*.pem /etc/dist-observe/"
