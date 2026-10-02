@@ -436,13 +436,17 @@ pub fn serve(
                 let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(10)));
                 let mut tls_stream = rustls::Stream::new(&mut conn, &mut sock);
                 // One handshake, then up to 200 requests on this connection.
-                // Handshake failure on request #1 = reject+log (no app byte trusted).
+                // Only a FIRST-request failure is a reject (no app byte trusted).
+                // Later EOF/timeout = client went away after clean service: quiet.
+                let mut served = 0u32;
                 for _ in 0..200 {
                     match handle_tls(&mut tls_stream, &central, &peer) {
-                        Ok(true) => {}
+                        Ok(true) => served += 1,
                         Ok(false) => break, // client asked to close
                         Err(e) => {
-                            audit(&format!("tls-reject peer={peer} err={e}"), audit_file);
+                            if served == 0 {
+                                audit(&format!("tls-reject peer={peer} err={e}"), audit_file);
+                            }
                             break;
                         }
                     }

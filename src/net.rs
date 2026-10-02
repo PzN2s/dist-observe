@@ -27,8 +27,6 @@ pub fn read_request(stream: &mut impl Read) -> anyhow::Result<Request> {
     if request_line.len() > 4096 {
         anyhow::bail!("request line too long");
     }
-    let mut request_line = String::new();
-    reader.read_line(&mut request_line)?;
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("").to_string();
     let path = parts.next().unwrap_or("/").to_string();
@@ -202,4 +200,19 @@ pub fn normalize_addr(input: &str) -> String {
         s = host.to_string();
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_post_ingest_exact_bytes() {
+        let raw = b"POST /ingest HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+        let mut c = std::io::Cursor::new(raw);
+        let r = read_request(&mut c).unwrap();
+        assert_eq!(r.method, "POST");
+        assert_eq!(r.path, "/ingest");
+        assert_eq!(r.body, b"{}");
+    }
 }
