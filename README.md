@@ -12,6 +12,7 @@ Lower MTTR and fewer 3AM mysteries
 ```bash
 cargo build
 sudo bash scripts/install.sh
+./target/debug/dist-observe keygen --dir certs --client web-1
 sudo systemctl enable --now dist-observe-collector
 sudo systemctl enable --now dist-observe-agent@web-1
 ```
