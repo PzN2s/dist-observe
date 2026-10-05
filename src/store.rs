@@ -167,24 +167,6 @@ impl Store {
         Ok(n as usize)
     }
 
-    /// Delete snapshots (and orphaned runs) older than `cutoff_wall_ns`.
-    /// Returns rows removed. Retention guard against unbounded disk growth.
-    pub fn prune_before(&mut self, cutoff_wall_ns: u64) -> Result<usize> {
-        let c = cutoff_wall_ns as i64;
-        let s: usize = self
-            .conn
-            .execute("DELETE FROM snapshots WHERE wall_ns < ?1", params![c])?;
-        // runs table may not exist on old DBs — ignore that specific error.
-        if self.ensure_runs_table().is_ok() {
-            let _ = self
-                .conn
-                .execute("DELETE FROM runs WHERE wall_ns < ?1", params![c]);
-        }
-        // Reclaim space (WAL-less file DB: vacuum keeps steady-state size flat).
-        let _ = self.conn.execute_batch("VACUUM;");
-        Ok(s)
-    }
-
     /// All snapshots in chronological order (for offline replay).
     pub fn all_snapshots(&mut self) -> Result<Vec<crate::collect::snapshot::UnifiedSnapshot>> {
         let mut stmt = self

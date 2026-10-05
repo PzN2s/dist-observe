@@ -81,7 +81,6 @@ struct NodeState {
     samples: u64,
     cgroup: String,
     tids: u64,
-    anomalies: u64,
 }
 
 pub struct Central {
@@ -93,7 +92,6 @@ pub struct Central {
     /// 120/min/IP: comfortable for 1Hz agents, fatal for floods/bugs.
     hits: HashMap<String, VecDeque<std::time::Instant>>,
     audit: Option<String>,
-    webhook_url: Option<String>,
 }
 
 const RATE_PER_MIN: usize = 120;
@@ -114,7 +112,6 @@ pub struct IngestOut {
     pub cross_report: Option<String>,
     /// Machine-readable triage for agents running --only-actionable.
     pub actionable: bool,
-    pub reasons: Vec<String>,
 }
 
 fn percentile(sorted: &mut [i64], p: f64) -> f64 {
@@ -153,12 +150,7 @@ impl Central {
             cooldown_s,
             hits: HashMap::new(),
             audit,
-            webhook_url: None,
         })
-    }
-
-    pub fn set_webhook(&mut self, url: Option<String>) {
-        self.webhook_url = url;
     }
 
     /// True if this peer IP may proceed (sliding 60s window).
@@ -228,7 +220,6 @@ impl Central {
             samples: 0,
             cgroup: String::new(),
             tids: 0,
-            anomalies: 0,
         });
         st.samples += 1;
         st.cgroup = snap.psi.cgroup.clone();
@@ -244,58 +235,18 @@ impl Central {
 
         // Local (per-node) anomaly first — dedup/throttle preserved per node.
         let local = st.corr.push(snap.clone());
-        let (cross_report, actionable, reasons) = match local {
-            None => (None, true, vec![]),
+        let (cross_report, actionable) = match local {
+            None => (None, true),
             Some(a) => {
                 let flag = crate::correlate::is_actionable(&a.reasons);
-                (Some(self.render_cross(node, &a)), flag, a.reasons.clone())
+                (Some(self.render_cross(node, &a)), flag)
             }
         };
-        if cross_report.is_some() {
-            // bump per-node anomaly counter (best effort: re-fetch state)
-            if let Some(st2) = self.nodes.get_mut(node) {
-                st2.anomalies += 1;
-            }
-        }
         Ok(IngestOut {
             offset_ms: offset_ns as f64 / 1e6,
             cross_report,
             actionable,
-            reasons,
         })
-    }
-
-    /// Prometheus exposition of the latest sample per node + anomaly counters.
-    pub fn metrics(&self) -> String {
-        let mut o = String::new();
-        o.push_str("# HELP dist_observe_up 1 if the node recently reported\n");
-        o.push_str("# TYPE dist_observe_up gauge\n");
-        o.push_str("# HELP dist_observe_anomalies_total cross-node anomalies per node\n");
-        o.push_str("# TYPE dist_observe_anomalies_total counter\n");
-        let now_ns = crate::clock::UnifiedTimestamp::now().wall_ns as i64;
-        for (name, st) in &self.nodes {
-            let up = st
-                .buf
-                .back()
-                .map(|s| ((now_ns - s.ts.wall_ns as i64) < 30_000_000_000) as u8)
-                .unwrap_or(0);
-            o.push_str(&format!("dist_observe_up{{node=\"{name}\"}} {up}\n"));
-            o.push_str(&format!(
-                "dist_observe_anomalies_total{{node=\"{name}\"}} {}\n",
-                st.anomalies
-            ));
-            if let Some(s) = st.buf.back() {
-                o.push_str(&format!(
-                    "dist_cpu_pct{{node=\"{name}\"}} {:.2}\ndist_mem_pct{{node=\"{name}\"}} {:.2}\ndist_swap_pct{{node=\"{name}\"}} {:.2}\n",
-                    s.cpu.total_pct, s.mem.used_pct, s.mem.swap_used_pct
-                ));
-                o.push_str(&format!(
-                    "dist_clock_offset_ms{{node=\"{name}\"}} {:.2}\n",
-                    st.offsets_ns.back().copied().unwrap_or(0) as f64 / 1e6
-                ));
-            }
-        }
-        o
     }
 
     /// Join the triggering snapshot with the nearest same-window snapshot
@@ -407,10 +358,6 @@ fn audit_of(central: &Arc<Mutex<Central>>) -> Option<String> {
     central.lock().unwrap().audit.clone()
 }
 
-fn webhook_url_of(central: &Arc<Mutex<Central>>) -> Option<String> {
-    central.lock().unwrap().webhook_url.clone()
-}
-
 /// Blocking serve loop: thread-per-connection, shared Central behind a Mutex.
 pub fn serve(
     bind: &str,
@@ -418,7 +365,6 @@ pub fn serve(
     window_ms: i64,
     cooldown_s: f64,
     tls: TlsMode,
-    webhook_url: Option<String>,
 ) -> anyhow::Result<()> {
     let audit_file = match &tls {
         TlsMode::Tls { audit, .. } => audit.clone(),
@@ -430,7 +376,6 @@ pub fn serve(
         cooldown_s,
         audit_file,
     )?));
-    central.lock().unwrap().set_webhook(webhook_url);
     let listener = crate::net::listen(bind)?;
     match &tls {
         TlsMode::Tls { .. } => println!(
@@ -586,17 +531,10 @@ fn handle_generic(
                                 "offset_ms": out.offset_ms,
                                 "anomaly": out.cross_report,
                                 "actionable": out.actionable,
-                                "reasons": out.reasons,
                             });
                             crate::net::respond_json_conn(&mut *s, 200, &resp.to_string(), ka)?;
                             if let Some(rep) = out.cross_report {
                                 println!("{rep}");
-                                // Centralized alerting: every cross-node anomaly,
-                                // best-effort. (Set it here OR on agents, not both.)
-                                crate::notify::fire(
-                                    &webhook_url_of(central),
-                                    crate::notify::payload("collector", &node, "", &out.reasons),
-                                );
                             }
                         }
                         Err(e) => {
@@ -622,18 +560,6 @@ fn handle_generic(
             let budget = skew_budget_ms(c.window_ms);
             let resp = serde_json::json!({"skew_budget_ms": budget, "nodes": rep});
             crate::net::respond_json_conn(&mut *s, 200, &resp.to_string(), ka)?;
-        }
-        ("GET", "/metrics") => {
-            // Prometheus exposition (text/plain). Suggest scrape_interval ≥15s.
-            let body = central.lock().unwrap().metrics();
-            let head = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: {}\r\nConnection: {}\r\n\r\n",
-                body.len(),
-                if ka { "keep-alive" } else { "close" }
-            );
-            s.write_all(head.as_bytes())?;
-            s.write_all(body.as_bytes())?;
-            s.flush()?;
         }
         _ => {
             let resp = serde_json::json!({"ok": false, "error": "use POST /ingest or GET /nodes|/health"});
