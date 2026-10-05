@@ -20,3 +20,4 @@ time = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
 rustls-pki-types = "1"
 rcgen = "0.13"
+x509-parser = "0.18.1"

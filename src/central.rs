@@ -89,12 +89,13 @@ pub struct Central {
     window_ms: i64,
     cooldown_s: f64,
     /// Sliding-window rate limiter: peer IP → recent request Instants.
-    /// 120/min/IP: comfortable for 1Hz agents, fatal for floods/bugs.
+    /// 600/min/IP: ~10 agents at 1Hz behind one NAT before throttling;
+    /// floods/bugs (1000s/min) still die. Tune per fleet size.
     hits: HashMap<String, VecDeque<std::time::Instant>>,
     audit: Option<String>,
 }
 
-const RATE_PER_MIN: usize = 120;
+const RATE_PER_MIN: usize = 600;
 
 #[derive(Debug, Serialize)]
 pub struct NodeSkew {
@@ -355,7 +356,7 @@ fn audit(msg: &str, audit_file: &Option<String>) {    use chrono::Utc;
 }
 
 fn audit_of(central: &Arc<Mutex<Central>>) -> Option<String> {
-    central.lock().unwrap().audit.clone()
+    central.lock().unwrap_or_else(|e| e.into_inner()).audit.clone()
 }
 
 /// Blocking serve loop: thread-per-connection, shared Central behind a Mutex.
@@ -391,7 +392,9 @@ pub fn serve(
     // when they end in rejection, so an unbounded thread-per-connection server
     // is handshake-floodable. Excess connections are dropped + audited.
     let live = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    const MAX_CONNS: usize = 64;
+    // Fleet headroom: 256 parked keep-alive threads max. Each holds one idle
+    // connection; RSS cost is one stack per thread (mostly untouched pages).
+    const MAX_CONNS: usize = 256;
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(s) => s,
@@ -434,14 +437,34 @@ pub fn serve(
                 };
                 let mut sock = stream;
                 let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+                // Force the handshake NOW, before any application byte: the
+                // peer identity must be known for request #1 (a lazy handshake
+                // would leave the first ingest unchecked — fail-open bypass).
+                if let Err(e) = conn.complete_io(&mut sock) {
+                    audit(&format!("tls-reject peer={peer} err={e}"), audit_file);
+                    return;
+                }
+                let peer_cn: Option<String> = conn
+                    .peer_certificates()
+                    .and_then(|c| c.first())
+                    .and_then(|c| crate::tls::client_cn(c.as_ref()).ok());
+                if peer_cn.is_none() {
+                    audit(&format!("tls-reject peer={peer} err=no client identity after handshake"), audit_file);
+                    return;
+                }
                 let mut tls_stream = rustls::Stream::new(&mut conn, &mut sock);
                 // One handshake, then up to 200 requests on this connection.
                 // Only a FIRST-request failure is a reject (no app byte trusted).
                 // Later EOF/timeout = client went away after clean service: quiet.
+                // Peer identity (client-cert CN) is captured after the first
+                // successful request (handshake completes lazily on first I/O)
+                // and binds every later ingest on this connection to that node.
                 let mut served = 0u32;
                 for _ in 0..200 {
-                    match handle_tls(&mut tls_stream, &central, &peer) {
-                        Ok(true) => served += 1,
+                    match handle_tls(&mut tls_stream, &central, &peer, peer_cn.clone()) {
+                        Ok(true) => {
+                            served += 1;
+                        }
                         Ok(false) => break, // client asked to close
                         Err(e) => {
                             if served == 0 {
@@ -475,8 +498,9 @@ fn handle_tls(
     stream: &mut rustls::Stream<rustls::ServerConnection, std::net::TcpStream>,
     central: &Arc<Mutex<Central>>,
     peer: &str,
+    peer_cn: Option<String>,
 ) -> anyhow::Result<bool> {
-    handle_generic(stream, central, peer)
+    handle_generic(stream, central, peer, peer_cn)
 }
 
 fn handle(
@@ -484,13 +508,14 @@ fn handle(
     central: &Arc<Mutex<Central>>,
     peer: &str,
 ) -> anyhow::Result<bool> {
-    handle_generic(&mut *stream, central, peer)
+    handle_generic(&mut *stream, central, peer, None)
 }
 
 fn handle_generic(
     s: &mut (impl std::io::Read + std::io::Write),
     central: &Arc<Mutex<Central>>,
     peer: &str,
+    peer_cn: Option<String>,
 ) -> anyhow::Result<bool> {
     let req = crate::net::read_request(s)?;
     // Honor one-shot clients (curl, health checks); agents use keep-alive.
@@ -502,9 +527,9 @@ fn handle_generic(
     match (req.method.as_str(), req.path.as_str()) {
         ("POST", "/ingest") => {
             // Rate limit first (cheap), before any parsing/storage work.
-            if !central.lock().unwrap().check_rate(peer) {
+            if !central.lock().unwrap_or_else(|e| e.into_inner()).check_rate(peer) {
                 audit(&format!("rate-limit peer={peer}"), &audit_of(central));
-                let resp = serde_json::json!({"ok": false, "error": "rate limited (120/min)"});
+                let resp = serde_json::json!({"ok": false, "error": "rate limited (600/min/IP — tune RATE_PER_MIN for bigger fleets)"});
                 crate::net::respond_json_conn(&mut *s, 429, &resp.to_string(), ka)?;
                 return Ok(false);
             }
@@ -518,13 +543,25 @@ fn handle_generic(
             match body {
                 Ok(b) => {
                     let node = sanitize_node(&b.node);
+                    // Authorization, not just authentication: the presented
+                    // client cert names exactly one node
+                    // (dist-observe-agent-{node}). A cert holder pushing as a
+                    // DIFFERENT node is spoofing — 403 + audit, nothing stored.
+                    if let Some(cn) = peer_cn.as_deref() {
+                        if !crate::tls::node_matches_cn(&node, cn) {
+                            audit(&format!("node-spoof peer={peer} node={node} cn={cn}"), &audit_of(central));
+                            let resp = serde_json::json!({"ok": false, "error": "node does not match client certificate"});
+                            crate::net::respond_json_conn(&mut *s, 403, &resp.to_string(), ka)?;
+                            return Ok(false);
+                        }
+                    }
                     if let Err(e) = validate_snapshot(&b.snapshot) {
                         audit(&format!("bad-snapshot peer={peer} node={node} err={e}"), &audit_of(central));
                         let resp = serde_json::json!({"ok": false, "error": format!("invalid snapshot: {e}")});
                         crate::net::respond_json_conn(&mut *s, 400, &resp.to_string(), ka)?;
                         return Ok(false);
                     }
-                    match central.lock().unwrap().ingest(&node, b.snapshot) {
+                    match central.lock().unwrap_or_else(|e| e.into_inner()).ingest(&node, b.snapshot) {
                         Ok(out) => {
                             let resp = serde_json::json!({
                                 "ok": true,
@@ -550,12 +587,12 @@ fn handle_generic(
             }
         }
         ("GET", "/health") => {
-            let c = central.lock().unwrap();
+            let c = central.lock().unwrap_or_else(|e| e.into_inner());
             let resp = serde_json::json!({"ok": true, "nodes": c.node_names()});
             crate::net::respond_json_conn(&mut *s, 200, &resp.to_string(), ka)?;
         }
         ("GET", "/nodes") => {
-            let c = central.lock().unwrap();
+            let c = central.lock().unwrap_or_else(|e| e.into_inner());
             let rep = c.skew_report();
             let budget = skew_budget_ms(c.window_ms);
             let resp = serde_json::json!({"skew_budget_ms": budget, "nodes": rep});

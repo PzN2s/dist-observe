@@ -177,6 +177,9 @@ pub fn classify(input_id: &str, runs: &[WorkerRun]) -> Classification {
 /// Per-run environment at its own unified timestamp (the correlation half).
 fn env_lines(runs: &[WorkerRun]) -> Vec<String> {
     let mut out = Vec::new();
+    if runs.is_empty() {
+        return out;
+    }
     let mut gpu_seen = false;
     for r in runs {
         match serde_json::from_str::<crate::collect::snapshot::UnifiedSnapshot>(

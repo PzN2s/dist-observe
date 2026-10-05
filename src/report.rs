@@ -3,11 +3,20 @@ use crate::correlate::Anomaly;
 
 pub fn render(a: &Anomaly) -> String {
     let s = &a.snapshot;
+    // Hostnames arrive from remote agents: strip control characters so a
+    // rogue/compromised node cannot inject terminal escape sequences into
+    // the operator's console. (Storage keeps the raw value for forensics.)
+    let host: String = s
+        .hostname
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(256)
+        .collect();
     let mut o = String::new();
     o.push_str(&format!(
         "⚠ ANOMALY @ {} ({}) — {}\n",
         a.at_iso,
-        s.hostname,
+        host,
         a.reasons.join(" | ")
     ));
     o.push_str(&format!(
@@ -34,13 +43,20 @@ pub fn render(a: &Anomaly) -> String {
         s.disk.write_kb_total / 1024,
     ));
     for g in &s.gpus {
+        // Same terminal-injection hygiene as hostname above (remote data).
+        let gname: String = g
+            .name
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(128)
+            .collect();
         if !g.available {
-            o.push_str(&format!("  GPU: {}\n", g.name));
+            o.push_str(&format!("  GPU: {}\n", gname));
         } else {
             o.push_str(&format!(
                 "  GPU-{} {} util {}% vram {}/{}MB ({:.0}%) {}°C {}MHz {:.0}W\n",
                 g.index,
-                g.name,
+                gname,
                 g.util_pct,
                 g.mem_used_mb,
                 g.mem_total_mb,

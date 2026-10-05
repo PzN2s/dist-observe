@@ -1,0 +1,11 @@
+# logrotate for the collector audit log (install: copy to /etc/logrotate.d/).
+# Without rotation the append-only audit file grows unbounded over months.
+/var/log/dist-observe/audit.log {
+    weekly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

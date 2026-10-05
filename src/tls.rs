@@ -135,6 +135,26 @@ pub fn server_name() -> Result<rustls::pki_types::ServerName<'static>> {
         .map(|n| n.to_owned())
 }
 
+/// Common Name of a DER-encoded peer certificate.
+/// Our keygen mints `dist-observe-agent-{node}` — the collector binds the
+/// claimed node name to the presented identity, so a compromised agent cert
+/// cannot spoof a DIFFERENT node's data (without this, any valid client cert
+/// could push as any node: authentication without authorization).
+pub fn client_cn(der: &[u8]) -> Result<String> {
+    let (_, cert) = x509_parser::parse_x509_certificate(der)?;
+    let cn = cert
+        .subject()
+        .iter_common_name()
+        .next()
+        .context("client cert has no CN")?;
+    Ok(cn.as_str()?.to_string())
+}
+
+/// Does this node name match the presented client identity?
+pub fn node_matches_cn(node: &str, cn: &str) -> bool {
+    cn == format!("dist-observe-agent-{node}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,8 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn mtls_rejects_client_without_cert() {
-        let (srv, cli) = test_pki("nocert");
+    fn mtls_rejects_client_without_cert() {        let (srv, cli) = test_pki("nocert");
         let (addr, h) = serve_once(server_config(&srv).unwrap());
         // Same CA roots, but NO client certificate at all.
         let roots = {
@@ -233,5 +252,28 @@ mod tests {
             msg.contains("certificate") || msg.contains("Certificate"),
             "unexpected: {msg}"
         );
+    }
+
+    #[test]
+    fn client_cn_extraction_and_node_binding() {
+        let dir = format!(
+            "{}/dist-obs-test-cn-{}",
+            std::env::temp_dir().display(),
+            std::process::id()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        keygen(&dir, &[], &["node-a".to_string()]).unwrap();
+        let der = std::fs::read(format!("{dir}/client-node-a-cert.pem")).unwrap();
+        // PEM -> DER first (client_cn takes DER like rustls hands us).
+        use rustls_pki_types::pem::PemObject;
+        let der = rustls::pki_types::CertificateDer::pem_slice_iter(&der)
+            .next()
+            .unwrap()
+            .unwrap();
+        let cn = client_cn(&der).unwrap();
+        assert_eq!(cn, "dist-observe-agent-node-a");
+        assert!(node_matches_cn("node-a", &cn));
+        assert!(!node_matches_cn("node-b", &cn));
+        assert!(!node_matches_cn("node-a-evil", &cn));
     }
 }
