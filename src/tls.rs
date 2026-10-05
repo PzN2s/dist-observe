@@ -1,8 +1,5 @@
-//! mTLS transport: every agent↔collector byte travels inside TLS 1.2+ with
-//! certificates on BOTH sides (mutual TLS). No shared tokens — possession of
-//! a CA-signed client cert IS the identity, and the server cert pins the
-//! collector. Plaintext is only possible with an explicit `--insecure` flag
-//! (and the collector prints a LOUD warning when it does).
+//! Mutual TLS for agent traffic. No tokens: a CA-signed client cert is the identity.
+
 use anyhow::{Context, Result};
 use std::sync::Arc;
 
@@ -12,10 +9,7 @@ pub struct TlsFiles {
     pub key: String,
 }
 
-/// Generate a CA + server cert + client cert(s) into `dir` (keys mode 600).
-/// Explicit bounded validity (CA 10y, leaves 825d — the industry ceiling):
-/// rcgen defaults to year-4096 certs, i.e. forever-credentials if stolen.
-/// Expiry dates are printed so rotation is plannable, not discoverable.
+/// Mint CA + server + client certs (keys 600). Bounded validity: CA 10y, leaves 825d.
 pub fn keygen(dir: &str, server_sans: &[String], clients: &[String]) -> Result<()> {
     use rcgen::{BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair};
     fn validity(days: i64) -> (time::OffsetDateTime, time::OffsetDateTime) {
@@ -135,11 +129,7 @@ pub fn server_name() -> Result<rustls::pki_types::ServerName<'static>> {
         .map(|n| n.to_owned())
 }
 
-/// Common Name of a DER-encoded peer certificate.
-/// Our keygen mints `dist-observe-agent-{node}` — the collector binds the
-/// claimed node name to the presented identity, so a compromised agent cert
-/// cannot spoof a DIFFERENT node's data (without this, any valid client cert
-/// could push as any node: authentication without authorization).
+/// Peer cert CN. keygen mints dist-observe-agent-{node}; mismatched claims are rejected.
 pub fn client_cn(der: &[u8]) -> Result<String> {
     let (_, cert) = x509_parser::parse_x509_certificate(der)?;
     let cn = cert

@@ -30,10 +30,7 @@ fn table_sql(conn: &Connection) -> String {
     .unwrap_or_default()
 }
 
-/// Rebuild with composite PRIMARY KEY(node, wall_ns): the old single-node
-/// schema (PK on wall_ns alone) cannot express per-node uniqueness, and
-/// SQLite upsert will not bind ON CONFLICT(node, wall_ns) to a secondary
-/// index while a rowid PK exists. Data is preserved.
+/// Rebuild legacy single-node schema to composite PK(node, wall_ns), preserving data.
 fn rebuild_composite(conn: &Connection, has_node: bool) -> Result<()> {
     let node_expr = if has_node { "node" } else { "'local'" };
     conn.execute_batch(&format!(

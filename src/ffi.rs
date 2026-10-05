@@ -1,15 +1,5 @@
-//! FFI memory tracking: where RSS *really* lives, per process.
-//! A heap profiler (tracemalloc, heapy, DHAT) sees only managed allocations.
-//! Memory malloc'd/mmap'd across an FFI boundary (C extension, ctypes, Rust
-//! cdylib, CUDA pinned buffers) bypasses it entirely — yet it all shows up in
-//! /proc/PID/smaps. We parse smaps per mapping and attribute every kilobyte to
-//! exactly one category, so a leak reads as:
-//!   "anon-mmap +45MB while heap flat → native/FFI leak, heap profilers blind"
-//! instead of "RSS grew, good luck".
-//!
-//! Python-arena heuristic: CPython obmalloc owns 256 KiB arenas (anon, rw,
-//! exactly 262144 bytes). Counting them separates "Python objects" from raw
-//! native mmaps without attaching to the interpreter.
+//! Where each process RSS really lives: parses smaps per mapping so
+//! native/FFI leaks (invisible to heap profilers) get attributed properly.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

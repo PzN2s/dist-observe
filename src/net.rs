@@ -1,7 +1,4 @@
-//! Minimal HTTP transport over std only (no web framework).
-//! Collector side: tiny threaded server speaking just enough HTTP/1.0-1.1 to
-//! accept `POST /ingest` from agents and answer `GET /nodes|/health` (curl-able).
-//! Agent side: persistent keep-alive connection (one TLS handshake per run).
+//! Tiny HTTP over std only: just enough for ingest/health/nodes/metrics.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};

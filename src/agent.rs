@@ -46,8 +46,7 @@ pub fn run(o: Opts) -> Result<()> {
     let mut dropped = 0usize;
     let mut offsets: Vec<f64> = Vec::new();
     let mut i = 0usize;
-    // ONE connection (and one TLS handshake) for the whole run; transparent
-    // reconnect if the server ever closes it (it caps at 200 reqs/conn).
+    // One connection per run; transparent reconnect if the server closes it.
     let mut conn = match crate::net::Conn::connect(&addr, &tls) {
         Ok(c) => c,
         Err(e) => {

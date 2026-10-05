@@ -1,17 +1,6 @@
-//! Correlation engine (MVP): ring buffer of snapshots keyed by unified timestamp.
-//! On anomaly, gather all layers within ±window_ms and render ONE explanatory snapshot
-//! instead of disconnected graphs.
-//!
-//! Dedup/throttle: a persistent HIGH value is a STEADY state, not a new event.
-//! Each anomaly type has (a) a per-type cooldown and (b) a delta gate — a repeat
-//! is suppressed unless the value moved materially or the cooldown expired.
-//! Suppressed repeats are counted and reported so silence is explainable.
-//!
-//! Two complementary swap signals:
-//! - LEVEL: swap % high (with STEADY/ACTIVE label from current paging rate).
-//! - ACTIVITY: sudden pswpin/pswpout spikes vs the median of the last N samples.
-//!   A spike fires even if swap % barely moved — paging activity is the signal,
-//!   the flat percentage is just the baseline.
+//! Anomaly correlator: ring buffer keyed by unified timestamp.
+//! Steady highs stay silent (cooldown + delta gates); only new events fire.
+
 use crate::collect::snapshot::UnifiedSnapshot;
 use std::collections::{HashMap, VecDeque};
 
@@ -71,9 +60,7 @@ fn rate_spike_tuned(
     }
 }
 
-/// Neighbor-storm digest tuning: sustained EXTREME host noise is itself a
-/// capacity incident (migrate/throttle/complain), even when every single
-/// spike is tenant-clean. Edge-triggered like everything else.
+/// Neighbor-storm digest: extreme sustained host noise escalates once (capacity incident).
 const NSTORM_WINDOW_NS: u64 = 600_000_000_000; // trailing 10 minutes
 const NSTORM_TH: usize = 20; // fire at this many neighbor detections…
 const NSTORM_REARM: usize = 10; // …and re-arm only once it calms below this
@@ -107,10 +94,7 @@ pub struct Correlator {
     /// Per-signal rate baselines for the median spike detector
     /// (pgin/pgout/retrans/tcploss…).
     sig_hists: HashMap<String, VecDeque<f64>>,
-    /// Was this signal spiking on the PREVIOUS sample? Spikes are edge-triggered:
-    /// only the quiet→spiking transition force-fires. A sustained storm holds
-    /// its fire after the first alert (cooldown reminders aside) instead of
-    /// alerting every second against a lagging median.
+    /// Edge-triggered spikes: only quiet→spiking transitions force-fire.
     sig_active: HashMap<String, bool>,
     /// Timestamps (mono_ns) of neighbor-labeled spike DETECTIONS (fired or
     /// suppressed — evidence accumulates either way) + digest edge state.
@@ -261,12 +245,8 @@ impl Correlator {
                 force: !loss_was,
             });
         }
-        // Neighbor-storm digest: sustained EXTREME host activity is evidence,
-        // fired or suppressed, spiking or plateaued. (Spike *detections* adapt
-        // away within ~5 samples as the median catches up — correct for events,
-        // wrong for storm evidence. So the digest counts *active* samples:
-        // any signal at/above its floor while the tenant is clean.)
-        // One tick per sample max, then the usual edge + cooldown machinery.
+        // Storm digest counts active (not just spiking) samples: medians adapt
+        // within ~5 ticks, but sustained extremes are still evidence.
         let now_mono = s.ts.mono_ns;
         let extreme = cur_in >= spike_floor("pgin")
             || cur_out >= spike_floor("pgout")
@@ -372,11 +352,7 @@ impl Correlator {
 /// Sustained paging above this = ACTIVE thrashing (pages/s).
 const ACTIVE_PAGING_RATE: f64 = 500.0;
 
-/// Tenant-vs-host suffix for paging spikes: same unified timestamp, but
-/// whose storm is it? Two resolutions: PSI stalls (sustained pressure) and
-/// major-fault rates (sub-second micro-bursts PSI cannot see at 1s sampling).
-/// Appended only when attribution is decisive. OURS wins on conflict: a
-/// tenant that faults/stalls alongside the host is participating, not clean.
+/// Whose storm is it: PSI stalls plus fault rates, same timestamp. Only added when decisive.
 fn tenant_suffix(s: &UnifiedSnapshot, prev: Option<&UnifiedSnapshot>) -> String {
     let Some(p) = prev else {
         return String::new();

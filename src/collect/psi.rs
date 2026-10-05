@@ -1,12 +1,5 @@
-//! Tenant isolation via cgroup v2 + PSI (Pressure Stall Information).
-//! System-wide counters (pswpin/out, RetransSegs) see the WHOLE host — a
-//! neighbor's storm looks exactly like ours. PSI fixes attribution: every
-//! cgroup reports its OWN stall times. Compare tenant stalls vs host stalls
-//! at the same unified timestamp:
-//!   tenant stalled too → OURS (we are the pressure)
-//!   host stalled, tenant clean → NEIGHBOR noise (not us — filter it)
-//! Signal used is `total=` (monotonic microseconds stalled) → per-interval
-//! stall fraction at full 1s resolution (avg10/60/300 windows are too slow).
+//! Tenant vs host pressure stalls (cgroup PSI). Slow-burn counterpart to fault counting.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

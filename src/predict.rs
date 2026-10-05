@@ -69,9 +69,7 @@ pub fn forecast_series(resource: &str, times_sec: &[f64], vals: &[f64]) -> Forec
         };
     }
     let hours_left = (100.0 - current) / slope;
-    // A sub-minute window cannot page anyone: slopes extrapolated from seconds
-    // of jitter produce absurd "CRITICAL in 0.3h" verdicts (seen live). Report
-    // the rate honestly but cap the severity at UNCERTAIN until minutes exist.
+    // Sub-minute slopes are jitter: report the rate, cap severity at UNCERTAIN.
     if span_s < 60.0 {
         return Forecast {
             resource: resource.into(),

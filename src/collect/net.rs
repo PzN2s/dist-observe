@@ -1,12 +1,5 @@
-//! Network stack telemetry for throughput correlation.
-//! Question answered: "throughput dropped — real network problem (retransmit
-//! spike, collapsing cwnd) or local pressure (CPU/swap) MASQUERADING as one?"
-//! Sources (all std-only, no pcap, no root):
-//! - per-iface byte/packet/drop counters → throughput B/s (non-lo + lo split)
-//! - /proc/net/snmp Tcp: InSegs/OutSegs/RetransSegs (cumulative)
-//! - /proc/net/netstat TcpExt: Timeouts/FastRetrans/SlowStartRetrans/SackRecovery
-//! - `ss -tin` (best effort): per-connection cwnd/rtt/retrans — the actual
-//!   congestion-window collapse signal, top retransmitters only.
+//! Throughput, retransmits and loss signals: is it the network or local pressure in disguise?
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -136,11 +129,7 @@ pub fn parse_ss(text: &str) -> Vec<SsConn> {
 }
 
 fn ss_conns() -> Vec<SsConn> {
-    // `ss` dumps netlink: fast normally, but a wedged stack (exactly when you
-    // need telemetry most) must never stall the whole 1s sample. coreutils
-    // `timeout` bounds it with zero leaked threads (a spawn+abandon thread
-    // would leak one thread per wedged sample). Missing `timeout` binary →
-    // empty conns, everything else still sampled.
+    // Bound ss with coreutils timeout so a wedged stack never stalls sampling.
     let out = std::process::Command::new("timeout")
         .args(["1", "ss", "-tin"])
         .output();

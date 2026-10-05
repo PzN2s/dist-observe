@@ -1,15 +1,5 @@
-//! Non-determinism detector: same input, different workers → different bits?
-//! Every worker run records input/output hashes PLUS the unified-timestamp
-//! correlation snapshot (CPU/GPU/swap) taken at that exact moment.
-//!
-//! Decision rule (no hand-waving):
-//! - Same reduction order but different outputs → SUSPECTED RACE (strong).
-//! - Different orders: compare the observed |a−b| against the deterministic
-//!   worst-case summation error bound (Wilkinson: (n−1)·ε·Σ|x|).
-//!   Within bound → BENIGN FP variance (order + heterogeneous clocks explain it).
-//!   Beyond bound → SUSPECTED RACE, even with different orders.
-//! - GPU clock/temp deltas are supporting evidence, never the verdict alone —
-//!   and the verdict works with zero GPU telemetry (order metadata + bound).
+//! Same input, different workers, different bits? Compares output hashes
+//! against the deterministic FP error bound to separate benign variance from races.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -105,8 +95,7 @@ pub fn classify(input_id: &str, runs: &[WorkerRun]) -> Classification {
     c.rel_diff = max_abs / scale;
 
     let first = &runs[0];
-    // Verdict inputs must agree: same hash but different lengths/sums means
-    // corrupt or mixed-up rows — refuse to exonerate on a broken bound.
+    // Refuse to exonerate on corrupt rows with mismatched metadata.
     if !runs.iter().all(|r| r.input_len == first.input_len && r.input_abs_sum == first.input_abs_sum) {
         c.verdict = Verdict::SuspectedRace;
         c.evidence.push("input metadata disagrees across runs (len/abs-sum) — rows corrupt or mixed".into());

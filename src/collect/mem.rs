@@ -1,10 +1,5 @@
-//! RAM collector: heap + non-heap (mmap/shm/mlock) so Rust↔Python↔C++
-//! FFI leaks that hide from heap-only profilers are still visible here.
-//!
-//! Swap ground truth: /proc/meminfo (SwapTotal/SwapFree) is authoritative on
-//! Linux. sysinfo is kept only as fallback. Paging activity (pswpin/pswpout
-//! from /proc/vmstat, cumulative) distinguishes a STEADY old baseline from
-//! ACTIVE thrashing — a flat swap % alone cannot.
+//! RAM plus the non-heap parts (shm, mlock, swap) that heap profilers miss.
+
 use serde::{Deserialize, Serialize};
 use sysinfo::System;
 

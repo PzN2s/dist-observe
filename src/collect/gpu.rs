@@ -70,11 +70,7 @@ fn sample_one(nvml: &nvml_wrapper::Nvml, i: u32) -> anyhow::Result<GpuSample> {
 
 
 fn sample_nvml() -> anyhow::Result<Vec<GpuSample>> {
-    // ONE handle per thread for the process lifetime: NVML init/shutdown per
-    // sample would churn driver refcounts every 1-2s. Failures are NOT cached
-    // (a driver installed later must be picked up); successes are reused.
-    // thread_local (not static): sampling is single-threaded by design, and
-    // this avoids any Send/Sync assumptions about the NVML handle.
+    // One NVML handle per thread for life; failures retry next tick (late driver install works).
     thread_local! {
         static NVML: std::cell::RefCell<Option<nvml_wrapper::Nvml>> =
             const { std::cell::RefCell::new(None) };

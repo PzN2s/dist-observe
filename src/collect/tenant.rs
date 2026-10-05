@@ -1,12 +1,6 @@
-//! Burst-resolution tenant attribution via major page faults.
-//! Lesson learned live: PSI `total=` at 1s resolution cannot see sub-second
-//! swap-in micro-bursts (a 9k-pages/s storm moved host mem-stall by <0.5%).
-//! Major faults can: one majflt ≈ one blocking disk read, and swap-in IS disk
-//! read. Summing majflt over every thread in OUR cgroup vs the host-wide
-//! `pgmajfault` counter attributes each burst at full sample resolution:
-//!   host majors spiking, tenant majors flat → NEIGHBOR (not us)
-//!   tenant majors tracking host → OURS
-//! PSI stays as the sustained-pressure signal; faults cover micro-bursts.
+//! Who faulted: our cgroup major faults vs host-wide pgmajfault.
+//! Catches sub-second swap bursts that PSI averages away.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

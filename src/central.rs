@@ -1,13 +1,5 @@
-//! Central collector: receives snapshots from agents, tracks per-node clock
-//! skew, persists to SQLite, and joins anomalies ACROSS nodes within the same
-//! ±window_ms wall-clock window (not just within one node).
-//!
-//! Clock-sync contract: cross-node correlation is only valid if the skew
-//! between nodes is small vs the window. Rule: |skew| budget = window/5
-//! (±500 ms window → ±100 ms budget). The collector measures the apparent
-//! offset of every push (receive_wall − sample_wall ≈ clock_diff + one-way
-//! network delay) and reports median/p95 per node on `GET /nodes`. Anything
-//! over budget is flagged — fix NTP (chrony) instead of trusting the join.
+//! Collector: takes agent snapshots, tracks clock skew, joins anomalies across nodes.
+//! Join key is wall_ns; skew budget is window/5 (untrusted beyond it).
 
 use crate::collect::snapshot::UnifiedSnapshot;
 use crate::correlate::Correlator;
@@ -88,9 +80,7 @@ pub struct Central {
     nodes: HashMap<String, NodeState>,
     window_ms: i64,
     cooldown_s: f64,
-    /// Sliding-window rate limiter: peer IP → recent request Instants.
-    /// 600/min/IP: ~10 agents at 1Hz behind one NAT before throttling;
-    /// floods/bugs (1000s/min) still die. Tune per fleet size.
+    /// Sliding-window rate limiter per peer IP (600/min; tune per fleet).
     hits: HashMap<String, VecDeque<std::time::Instant>>,
     audit: Option<String>,
 }
@@ -388,9 +378,7 @@ pub fn serve(
         ),
     }
     let tls = Arc::new(tls);
-    // Hard cap on concurrent connection threads: TLS handshakes cost CPU even
-    // when they end in rejection, so an unbounded thread-per-connection server
-    // is handshake-floodable. Excess connections are dropped + audited.
+    // Cap connection threads: handshakes cost CPU even when rejected.
     let live = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     // Fleet headroom: 256 parked keep-alive threads max. Each holds one idle
     // connection; RSS cost is one stack per thread (mostly untouched pages).
@@ -437,9 +425,7 @@ pub fn serve(
                 };
                 let mut sock = stream;
                 let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(10)));
-                // Force the handshake NOW, before any application byte: the
-                // peer identity must be known for request #1 (a lazy handshake
-                // would leave the first ingest unchecked — fail-open bypass).
+                // Handshake now so peer identity covers request #1 too.
                 if let Err(e) = conn.complete_io(&mut sock) {
                     audit(&format!("tls-reject peer={peer} err={e}"), audit_file);
                     return;
@@ -453,12 +439,8 @@ pub fn serve(
                     return;
                 }
                 let mut tls_stream = rustls::Stream::new(&mut conn, &mut sock);
-                // One handshake, then up to 200 requests on this connection.
-                // Only a FIRST-request failure is a reject (no app byte trusted).
-                // Later EOF/timeout = client went away after clean service: quiet.
-                // Peer identity (client-cert CN) is captured after the first
-                // successful request (handshake completes lazily on first I/O)
-                // and binds every later ingest on this connection to that node.
+                // One handshake, up to 200 requests. First-request failure = reject;
+                // later EOF = clean disconnect. Peer CN is bound from request #1.
                 let mut served = 0u32;
                 for _ in 0..200 {
                     match handle_tls(&mut tls_stream, &central, &peer, peer_cn.clone()) {
