@@ -19,4 +19,5 @@ sha2 = "0.10"
 time = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
 rustls-pki-types = "1"
+webpki-roots = "1"
 rcgen = "0.13"

@@ -14,24 +14,40 @@ pub struct GpuSample {
     pub temp_c: u32,
     pub clock_mhz: u32,
     pub power_w: f64,
+    /// "nvml" | "rocm" | "none" — old rows lack it (serde default "").
+    #[serde(default)]
+    pub backend: String,
 }
 
 pub fn sample_all() -> Vec<GpuSample> {
-    match sample_nvml() {
-        Ok(v) => v,
-        Err(e) => vec![GpuSample {
-            index: 0,
-            name: format!("no-gpu ({e})"),
-            available: false,
-            util_pct: 0,
-            mem_used_mb: 0,
-            mem_total_mb: 0,
-            mem_used_pct: 0.0,
-            temp_c: 0,
-            clock_mhz: 0,
-            power_w: 0.0,
-        }],
+    // NVIDIA first (richer telemetry), AMD fallback, graceful absence last.
+    // A backend counts only with at least one AVAILABLE device; anything else
+    // (errors, all-unreadable, zero devices) falls through to the next.
+    // The NVML error text is preserved in the marker — on a real NVIDIA box
+    // it names the cause (missing lib vs permissions vs driver).
+    let nvml_err = match sample_nvml() {
+        Ok(v) => {
+            if v.iter().any(|g| g.available) {
+                return v;
+            }
+            None
+        }
+        Err(e) => Some(e.to_string()),
+    };
+    let amd = crate::collect::amd::sample_all();
+    if amd.iter().any(|g| g.available) {
+        return amd;
     }
+    vec![GpuSample {
+        index: 0,
+        name: match nvml_err {
+            Some(e) => format!("no-gpu (nvml: {e})"),
+            None => "no-gpu (no NVML device and no rocm-smi output)".into(),
+        },
+        available: false,
+        backend: "none".into(),
+        ..Default::default()
+    }]
 }
 
 fn sample_one(nvml: &nvml_wrapper::Nvml, i: u32) -> anyhow::Result<GpuSample> {
@@ -54,6 +70,7 @@ fn sample_one(nvml: &nvml_wrapper::Nvml, i: u32) -> anyhow::Result<GpuSample> {
         index: i,
         name,
         available: true,
+        backend: "nvml".into(),
         util_pct: util.map(|u| u.gpu).unwrap_or(0),
         mem_used_mb: used_mb,
         mem_total_mb: total_mb,

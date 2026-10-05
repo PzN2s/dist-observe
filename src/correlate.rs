@@ -630,6 +630,7 @@ mod tests {
                 index: 0,
                 name: "none".into(),
                 available: false,
+                backend: "none".into(),
                 util_pct: 0,
                 mem_used_mb: 0,
                 mem_total_mb: 0,

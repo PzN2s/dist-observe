@@ -14,6 +14,7 @@ pub struct Opts {
     pub local_db: Option<String>,
     pub tls: Option<std::sync::Arc<rustls::ClientConfig>>,
     pub only_actionable: bool,
+    pub webhook_url: Option<String>,
 }
 
 pub fn run(o: Opts) -> Result<()> {
@@ -33,6 +34,7 @@ pub fn run(o: Opts) -> Result<()> {
     let disk = o.disk.as_str();
     let tls = o.tls;
     let only_actionable = o.only_actionable;
+    let webhook_url = o.webhook_url;
     let mut sys = sysinfo::System::new_all();
     sys.refresh_cpu_usage();
     std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
@@ -86,6 +88,15 @@ pub fn run(o: Opts) -> Result<()> {
                     if show {
                         if let Some(rep) = v.get("anomaly").and_then(|a| a.as_str()) {
                             println!("{rep}");
+                            let reasons: Vec<String> = v
+                                .get("reasons")
+                                .and_then(|r| r.as_array())
+                                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                                .unwrap_or_default();
+                            crate::notify::fire(
+                                &webhook_url,
+                                crate::notify::payload("agent", &node, rep.lines().next().unwrap_or(""), &reasons),
+                            );
                         }
                     }
                     // Link skew: receive_wall − sample_wall per sample.

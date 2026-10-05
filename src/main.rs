@@ -6,6 +6,7 @@ mod correlate;
 mod doctor;
 mod ffi;
 mod net;
+mod notify;
 mod tls;
 mod nondet;
 mod predict;
@@ -34,8 +35,12 @@ enum Cmd {
         #[arg(long, default_value = "500")] window_ms: i64,
         /// Min seconds before re-printing the same anomaly type (delta can fire sooner).
         #[arg(long, default_value = "30.0")] anomaly_cooldown: f64,
+        /// Auto-delete samples older than N days at startup (0 = keep forever).
+        #[arg(long, default_value = "0")] retention_days: u64,
         /// Display only: OURS + fresh unlabeled anomalies (storage untouched).
         #[arg(long)] only_actionable: bool,
+        /// POST displayed anomalies as JSON here (best-effort, never blocks).
+        #[arg(long)] webhook_url: Option<String>,
     },
     /// Live watch: pretty one-line status + anomaly snapshots (same as record, human output).
     Watch {
@@ -44,8 +49,12 @@ enum Cmd {
         #[arg(long, default_value = "observe.db")] db: String,
         #[arg(long, default_value = "/")] disk: String,
         #[arg(long, default_value = "30.0")] anomaly_cooldown: f64,
+        /// Auto-delete samples older than N days at startup (0 = keep forever).
+        #[arg(long, default_value = "0")] retention_days: u64,
         /// Display only: OURS + fresh unlabeled anomalies (storage untouched).
         #[arg(long)] only_actionable: bool,
+        /// POST displayed anomalies as JSON here (best-effort, never blocks).
+        #[arg(long)] webhook_url: Option<String>,
     },
     /// Predictive alert: exhaustion forecast from recorded trend.
     Predict {
@@ -75,6 +84,8 @@ enum Cmd {
         #[arg(long)] insecure: bool,
         /// Display only: OURS + fresh unlabeled anomalies (storage untouched).
         #[arg(long)] only_actionable: bool,
+        /// POST displayed anomalies as JSON here (best-effort, never blocks).
+        #[arg(long)] webhook_url: Option<String>,
     },
     /// Collector: receive from agents, cross-correlate within ±window_ms.
     Collector {
@@ -82,11 +93,15 @@ enum Cmd {
         #[arg(long, default_value = "central.db")] db: String,
         #[arg(long, default_value = "500")] window_ms: i64,
         #[arg(long, default_value = "30.0")] anomaly_cooldown: f64,
+        /// Auto-delete samples older than N days at startup (0 = keep forever).
+        #[arg(long, default_value = "0")] retention_days: u64,
         #[arg(long)] tls_ca: Option<String>,
         #[arg(long)] tls_cert: Option<String>,
         #[arg(long)] tls_key: Option<String>,
         #[arg(long)] audit_log: Option<String>,
         #[arg(long)] insecure: bool,
+        /// POST every cross-node anomaly as JSON here (centralized alerting).
+        #[arg(long)] webhook_url: Option<String>,
     },
     /// Check this machine's clock-sync fitness for cross-node correlation.
     Doctor {
@@ -125,6 +140,13 @@ enum Cmd {
         #[arg(long, default_value = "30.0")] anomaly_cooldown: f64,
         /// Display only: same --only-actionable triage as live.
         #[arg(long)] only_actionable: bool,
+        /// POST shown anomalies as JSON here (re-alert on recorded incidents).
+        #[arg(long)] webhook_url: Option<String>,
+    },
+    /// Delete samples older than N days (one-shot retention).
+    Prune {
+        #[arg(long, default_value = "observe.db")] db: String,
+        #[arg(long)] days: u64,
     },
     /// Generate CA + server + client certificates for mTLS (run once).
     Keygen {
@@ -139,23 +161,34 @@ enum Cmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Record { interval, count, db, disk, window_ms, anomaly_cooldown, only_actionable } => {
-            record(RecordOpts { db, disk, interval, count, window_ms, anomaly_cooldown, pretty: false, only_actionable })
+        Cmd::Record { interval, count, db, disk, window_ms, anomaly_cooldown, only_actionable, retention_days, webhook_url } => {
+            apply_retention(&db, retention_days)?;
+            record(RecordOpts { db, disk, interval, count, window_ms, anomaly_cooldown, pretty: false, only_actionable, webhook_url })
         }
-        Cmd::Watch { interval, count, db, disk, anomaly_cooldown, only_actionable } => {
-            record(RecordOpts { db, disk, interval, count, window_ms: 500, anomaly_cooldown, pretty: true, only_actionable })
+        Cmd::Watch { interval, count, db, disk, anomaly_cooldown, only_actionable, retention_days, webhook_url } => {
+            apply_retention(&db, retention_days)?;
+            record(RecordOpts { db, disk, interval, count, window_ms: 500, anomaly_cooldown, pretty: true, only_actionable, webhook_url })
         }
         Cmd::Predict { db, samples } => predict_cmd(&db, samples),
         Cmd::Show { db, limit } => show_cmd(&db, limit),
-        Cmd::Agent { collector, node_id, interval, count, disk, local_db, tls_ca, tls_cert, tls_key, insecure, only_actionable } => {
+        Cmd::Agent { collector, node_id, interval, count, disk, local_db, tls_ca, tls_cert, tls_key, insecure, only_actionable, webhook_url } => {
             let tls = tls_client(tls_ca, tls_cert, tls_key, insecure)?;
-            agent::run(agent::Opts { collector, node_id, interval, count, disk, local_db, tls, only_actionable })
+            agent::run(agent::Opts { collector, node_id, interval, count, disk, local_db, tls, only_actionable, webhook_url })
         }
-        Cmd::Collector { bind, db, window_ms, anomaly_cooldown, tls_ca, tls_cert, tls_key, audit_log, insecure } => {
+        Cmd::Collector { bind, db, window_ms, anomaly_cooldown, tls_ca, tls_cert, tls_key, audit_log, insecure, retention_days, webhook_url } => {
+            apply_retention(&db, retention_days)?;
             let mode = tls_server(tls_ca, tls_cert, tls_key, audit_log, insecure)?;
-            central::serve(&bind, &db, window_ms, anomaly_cooldown, mode)
+            central::serve(&bind, &db, window_ms, anomaly_cooldown, mode, webhook_url)
         }
         Cmd::Doctor { window_ms } => doctor::run(window_ms),
+        Cmd::Prune { db, days } => {
+            let mut st = store::Store::open(&db)?;
+            let now = clock::UnifiedTimestamp::now().wall_ns;
+            let cutoff = now.saturating_sub(days * 86_400_000_000_000);
+            let n = st.prune_before(cutoff)?;
+            println!("pruned {n} rows older than {days}d from {db}");
+            Ok(())
+        }
         Cmd::Keygen { dir, server_san, client } => {
             let clients = if client.is_empty() { vec!["agent".to_string()] } else { client };
             tls::keygen(&dir, &server_san, &clients)
@@ -177,7 +210,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::FfiTrack { pid, interval, count } => ffi_track(pid, interval, count),
-        Cmd::Replay { db, anomaly_cooldown, only_actionable } => {
+        Cmd::Replay { db, anomaly_cooldown, only_actionable, webhook_url } => {
             let mut st = store::Store::open(&db)?;
             let snaps = st.all_snapshots()?;
             if snaps.is_empty() {
@@ -191,6 +224,7 @@ fn main() -> Result<()> {
                     // Storage already happened at record time; replay only prints.
                     if !only_actionable || correlate::is_actionable(&a.reasons) {
                         println!("{}", report::render(&a));
+                        crate::notify::fire(&webhook_url, crate::notify::payload("replay", &a.snapshot.hostname, &a.at_iso, &a.reasons));
                         fired += 1;
                     }
                 }
@@ -299,9 +333,22 @@ fn tls_server(
     }
 }
 
+/// Startup retention: drop rows older than N days (0 = keep forever).
+fn apply_retention(db: &str, days: u64) -> Result<()> {
+    if days == 0 {
+        return Ok(());
+    }
+    let mut st = store::Store::open(db)?;
+    let now = clock::UnifiedTimestamp::now().wall_ns;
+    let n = st.prune_before(now.saturating_sub(days * 86_400_000_000_000))?;
+    if n > 0 {
+        println!("retention: pruned {n} rows older than {days}d from {db}");
+    }
+    Ok(())
+}
+
 /// record()/watch() knobs in one struct (clippy::too_many_arguments).
-struct RecordOpts {
-    db: String,
+struct RecordOpts {    db: String,
     disk: String,
     interval: f64,
     count: usize,
@@ -309,10 +356,11 @@ struct RecordOpts {
     anomaly_cooldown: f64,
     pretty: bool,
     only_actionable: bool,
+    webhook_url: Option<String>,
 }
 
 fn record(o: RecordOpts) -> Result<()> {
-    let RecordOpts { db, disk, interval, count, window_ms, anomaly_cooldown, pretty, only_actionable } = o;
+    let RecordOpts { db, disk, interval, count, window_ms, anomaly_cooldown, pretty, only_actionable, webhook_url } = o;
     let interval = sane_interval(interval, "record");
     let mut sys = System::new_all();
     // Warmup: sysinfo CPU usage needs two reads ≥ MINIMUM_CPU_UPDATE_INTERVAL
@@ -335,6 +383,7 @@ fn record(o: RecordOpts) -> Result<()> {
             // Display-only filter: storage above is untouched, full log retained.
             if !only_actionable || correlate::is_actionable(&a.reasons) {
                 println!("{}", report::render(&a));
+                crate::notify::fire(&webhook_url, crate::notify::payload("watch", &a.snapshot.hostname, &a.at_iso, &a.reasons));
             }
         }
         st.insert(&snap.hostname.clone(), &snap).unwrap_or_else(|e| {
