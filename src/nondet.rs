@@ -198,7 +198,8 @@ fn env_lines(runs: &[WorkerRun]) -> Vec<String> {
         }
     }
     if !runs.is_empty() {
-        let dt_ms = (runs.last().unwrap().mono_ns.saturating_sub(runs.first().unwrap().mono_ns)) as f64 / 1e6;
+        let (Some(first), Some(last)) = (runs.first(), runs.last()) else { return out };
+        let dt_ms = (last.mono_ns.saturating_sub(first.mono_ns)) as f64 / 1e6;
         out.push(format!("  runs spanned {dt_ms:.0}ms wall-to-wall"));
     }
     if !gpu_seen && !runs.is_empty() {

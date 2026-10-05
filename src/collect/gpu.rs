@@ -80,8 +80,12 @@ fn sample_nvml() -> anyhow::Result<Vec<GpuSample>> {
         if cell.borrow().is_none() {
             *cell.borrow_mut() = Some(nvml_wrapper::Nvml::init()?);
         }
-        let nvml = cell.borrow();
-        let nvml = nvml.as_ref().unwrap();
+        // init() either stored Some or returned early via `?` above, so this
+        // is unreachable in practice; fail closed (empty vec → fallback marker).
+        let binding = cell.borrow();
+        let Some(nvml) = binding.as_ref() else {
+            return Ok(());
+        };
         let n = nvml.device_count()?;
         for i in 0..n {
             // Per-device isolation: ONE flaky GPU (hotplug, MIG reconfig,
