@@ -69,19 +69,28 @@ pub fn forecast_series(resource: &str, times_sec: &[f64], vals: &[f64]) -> Forec
         };
     }
     let hours_left = (100.0 - current) / slope;
-    let short = if span_s < 60.0 {
-        " [short window — trend noisy, collect minutes/hours for reliability]"
-    } else {
-        ""
-    };
+    // A sub-minute window cannot page anyone: slopes extrapolated from seconds
+    // of jitter produce absurd "CRITICAL in 0.3h" verdicts (seen live). Report
+    // the rate honestly but cap the severity at UNCERTAIN until minutes exist.
+    if span_s < 60.0 {
+        return Forecast {
+            resource: resource.into(),
+            current_pct: current,
+            growth_pct_per_hour: slope,
+            hours_left: Some(hours_left),
+            verdict: format!(
+                "UNCERTAIN (short window): ~{hours_left:.1}h at {slope:.2}%/h — collect minutes/hours before paging anyone"
+            ),
+        };
+    }
     let verdict = if hours_left < 0.0 {
         "already over 100% — check data".into()
     } else if hours_left < 24.0 {
-        format!("CRITICAL: exhaustion in ~{hours_left:.1}h at {slope:.2}%/h{short}")
+        format!("CRITICAL: exhaustion in ~{hours_left:.1}h at {slope:.2}%/h")
     } else if hours_left < 72.0 {
-        format!("WARNING: exhaustion in ~{hours_left:.1}h at {slope:.2}%/h{short}")
+        format!("WARNING: exhaustion in ~{hours_left:.1}h at {slope:.2}%/h")
     } else {
-        format!("OK: ~{hours_left:.1}h left at {slope:.2}%/h{short}")
+        format!("OK: ~{hours_left:.1}h left at {slope:.2}%/h")
     };
     Forecast {
         resource: resource.into(),
@@ -140,5 +149,13 @@ mod tests {
     fn forecast_needs_span_not_just_count() {
         let f = forecast_series("mem", &[0.0, 0.5, 1.0], &[50.0, 50.5, 51.0]);
         assert!(f.verdict.contains("short window"), "{}", f.verdict);
+    }
+
+    #[test]
+    fn short_window_never_pages_critical() {
+        // Steep 1-second slope: honest rate, capped severity.
+        let f = forecast_series("mem", &[0.0, 0.5, 1.0], &[50.0, 60.0, 70.0]);
+        assert!(!f.verdict.contains("CRITICAL"), "{}", f.verdict);
+        assert!(f.verdict.contains("UNCERTAIN"), "{}", f.verdict);
     }
 }
